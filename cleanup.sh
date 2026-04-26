@@ -86,13 +86,18 @@ while IFS= read -r filename || [ -n "$filename" ]; do
             # 3. Remove from PHONE
             # We wrap $combined_phone_results in escaped quotes for the remote shell
             adb shell -n "rm \"$combined_phone_results\""
-            echo "OK: $filename | HD: Found 1 | PHONE: Removed from $combined_phone_results"
+            
+            # Extract just the directory from the full path
+            phone_dir=$(dirname "$combined_phone_results")
+            echo "OK: $filename | HD: Found 1 | PHONE: Removed from $phone_dir"
         
         elif [ "$phone_count" -gt 1 ]; then
             echo "SKIP: $filename | HD: Found 1 | PHONE: Multiple matches ($phone_count)"
         else
             echo "SKIP: $filename | HD: Found 1 | PHONE: Not found"
         fi
+    elif [ "$hd_count" -lt 1 ]; then
+        echo "MISSING: $filename | HD: NOT FOUND | PHONE: Not searched"
     else
         echo "SKIP: $filename | HD: Found $hd_count | PHONE: Not searched"
     fi
