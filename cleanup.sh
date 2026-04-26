@@ -4,24 +4,38 @@
 # DEFAULTS
 # ==========================================
 HARDDRIVE_DIR="/Volumes/foto"
-PHONE_DIR="sdcard/DCIM/"
+# Default phone directories as a proper Bash array
+PHONE_SEARCH_DIRS=("sdcard/Download" "sdcard/Pictures" "sdcard/Movies" "sdcard/DCIM")
 
 # ==========================================
 # USAGE FUNCTION
 # ==========================================
 usage() {
-    echo "Usage: cat list.txt | $0 [-d <harddrive_dir>] [-p <phone_dir>]"
+    echo "Usage: cat list.txt | $0 [-d <harddrive_dir>] [-p <phone_dir1> -p <phone_dir2>]"
     echo ""
     echo "Options:"
     echo "  -d    Hard drive base path (Default: $HARDDRIVE_DIR)"
-    echo "  -p    Phone base path (Default: $PHONE_DIR)"
+    echo "  -p    Phone base path. Can be used multiple times."
+    echo "        (Defaults: ${PHONE_SEARCH_DIRS[*]})"
     exit 1
 }
+
+# ==========================================
+# PARSE COMMAND LINE FLAGS
+# ==========================================
+# Reset array if user provides any -p flags
+user_provided_p=false
 
 while getopts "d:p:h" opt; do
     case "$opt" in
         d) HARDDRIVE_DIR="$OPTARG" ;;
-        p) PHONE_DIR="$OPTARG" ;;
+        p) 
+            if [ "$user_provided_p" = false ]; then
+                PHONE_SEARCH_DIRS=() # Clear defaults on first -p flag
+                user_provided_p=true
+            fi
+            PHONE_SEARCH_DIRS+=("$OPTARG") 
+            ;;
         h) usage ;;
         *) usage ;;
     esac
@@ -32,45 +46,55 @@ if [ -t 0 ]; then
     usage
 fi
 
+# ==========================================
+# MAIN LOGIC
+# ==========================================
 while IFS= read -r filename || [ -n "$filename" ]; do
-    # Strip carriage returns from the input line itself just in case
+    # Remove carriage returns (common in ADB/Windows sourced lists)
     filename=$(echo "$filename" | tr -d '\r')
-    
-    if [ -z "$filename" ]; then
-        continue
-    fi
+    [ -z "$filename" ] && continue
 
     # 1. Check HARDDRIVE
-    hd_results=$(find "$HARDDRIVE_DIR" -name "$filename" 2>/dev/null)
+    # We use -print0 and read to handle filenames with spaces/newlines safely
+    hd_results=""
+    while IFS= read -r -d '' line; do
+        hd_results+="$line"$'\n'
+    done < <(find "$HARDDRIVE_DIR" -name "$filename" -print0 2>/dev/null)
     
-    if [ -z "$hd_results" ]; then
-        hd_count=0
-    else
-        hd_count=$(echo "$hd_results" | wc -l)
-    fi
+    hd_count=$(echo -n "$hd_results" | grep -c . )
 
     if [ "$hd_count" -eq 1 ]; then
-        
-        # 2. Check PHONE 
-        # FIX: Added -n to adb shell to prevent it from reading from stdin
-        phone_results=$(adb shell -n "find \"$PHONE_DIR\" -name \"$filename\" 2>/dev/null" | tr -d '\r')
+        hd_path=$(echo "$hd_results" | xargs) # Clean up whitespace
 
-        if [ -z "$phone_results" ]; then
-            phone_count=0
-        else
-            phone_count=$(echo "$phone_results" | wc -l)
-        fi
+        # 2. Check PHONE
+        combined_phone_results=""
+        
+        for dir in "${PHONE_SEARCH_DIRS[@]}"; do
+            # Search in each directory. 
+            # We quote the remote find command and the filename variable heavily.
+            res=$(adb shell -n "find \"$dir\" -name \"$filename\" 2>/dev/null" | tr -d '\r')
+            if [ -n "$res" ]; then
+                combined_phone_results+="$res"$'\n'
+            fi
+        done
+
+        # Clean up the results list
+        combined_phone_results=$(echo "$combined_phone_results" | sed '/^$/d')
+        phone_count=$(echo "$combined_phone_results" | grep -c . )
 
         if [ "$phone_count" -eq 1 ]; then
             # 3. Remove from PHONE
-            # FIX: Added -n here as well
-            adb shell -n "rm \"$phone_results\""
-            echo "$filename  |  HD: Found (1)  |  PHONE: Found & Removed"
+            # We wrap $combined_phone_results in escaped quotes for the remote shell
+            adb shell -n "rm \"$combined_phone_results\""
+            echo "OK: $filename | HD: Found 1 | PHONE: Removed from $combined_phone_results"
+        
+        elif [ "$phone_count" -gt 1 ]; then
+            echo "SKIP: $filename | HD: Found 1 | PHONE: Multiple matches ($phone_count)"
         else
-            echo "$filename  |  HD: Found (1)  |  PHONE: Skipped ($phone_count matches)"
+            echo "SKIP: $filename | HD: Found 1 | PHONE: Not found"
         fi
     else
-        echo "$filename  |  HD: Skipped ($hd_count matches)  |  PHONE: Skipped (Not searched)"
+        echo "SKIP: $filename | HD: Found $hd_count | PHONE: Not searched"
     fi
 
 done
